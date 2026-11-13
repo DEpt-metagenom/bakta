@@ -479,6 +479,16 @@ same reference. In MMseqs2 mode, translated pseudogene searches additionally
 infer frameshift observations from protein alignment gaps rather than using
 Diamond's frameshift-aware `blastx` model.
 
+MMseqs2 can nevertheless be a better choice when search throughput and
+scalability are priorities. Its highly parallel search pipeline can be faster
+for large query sets, it supports sensitive searches against FASTA databases
+without requiring a Diamond-specific database for each search, and its
+translated search mode provides a practical nucleotide-to-protein workflow.
+This can simplify database preparation and make custom or frequently updated
+protein reference sets easier to use. Diamond may remain preferable when
+matching its established alignments and scores as closely as possible is more
+important than these workflow and performance benefits.
+
 For a local comparison, the following commands were run successfully against
 the light database and the same test genome:
 
