@@ -132,3 +132,9 @@ dmypy.json
 
 # VS Code
 .vscode/
+
+# Local Bakta databases and test outputs
+bakta_db_light/
+testgenome.fasta
+testgenome_dmnd/
+testgenome_mmseqs/

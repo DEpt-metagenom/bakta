@@ -119,6 +119,7 @@ Bakta requires the following 3rd party software tools which must be installed an
 - Pyrodigal (3.7.0) <https://doi.org/10.21105/joss.04296> <https://github.com/althonos/pyrodigal>
 - PyHMMER (0.12.0) <https://doi.org/10.21105/joss.04296> <https://github.com/althonos/pyhmmer>
 - Diamond (2.1.22) <https://doi.org/10.1038/nmeth.3176> <https://github.com/bbuchfink/diamond>
+- MMseqs2 (18.8) <https://github.com/soedinglab/MMseqs2>
 - Blast+ (2.17.0) <https://www.ncbi.nlm.nih.gov/pubmed/2231712> <https://blast.ncbi.nlm.nih.gov>
 - AMRFinderPlus (4.2.7) <https://github.com/ncbi/amr>
 - pyCirclize (1.7.0) https://github.com/moshi4/pyCirclize
@@ -383,6 +384,7 @@ usage: bakta [--db DB] [--min-contig-length MIN_CONTIG_LENGTH] [--prefix PREFIX]
              [--replicons REPLICONS] [--regions REGIONS] [--proteins PROTEINS] [--hmms HMMS] [--meta]
              [--skip-trna] [--skip-tmrna] [--skip-rrna] [--skip-ncrna] [--skip-ncrna-region]
              [--skip-crispr] [--skip-cds] [--skip-pseudo] [--skip-sorf] [--skip-gap] [--skip-ori] [--skip-filter] [--skip-plot]
+             [--usediamond | --usemmseqs]
              [--help] [--verbose] [--debug] [--threads THREADS] [--tmp-dir TMP_DIR] [--version]
              <genome>
 
@@ -445,6 +447,10 @@ Workflow:
   --skip-filter         Skip feature overlap filters
   --skip-plot           Skip generation of circular genome plots
 
+Search engine:
+  --usediamond          Use Diamond for protein sequence searches (default)
+  --usemmseqs           Use MMseqs2 for protein sequence searches
+
 General:
   --help, -h            Show this help message and exit
   --verbose, -v         Print verbose information
@@ -453,6 +459,32 @@ General:
                         Number of threads to use (default = number of available CPUs)
   --tmp-dir TMP_DIR     Location for temporary files (default = system dependent auto detection)
   --version             show program's version number and exit
+```
+
+`--usemmseqs` requires FASTA versions of the protein databases alongside the
+database files. The converted light databases can be generated with
+`convert_dmnd_to_fasta.sh`. Pseudogene verification uses MMseqs2 translated
+search (`--search-type 2`) and tabular alignment output when `--usemmseqs` is
+selected. Diamond's frameshift-aware `blastx` output is not required in this
+mode; MMseqs2's translated alignment is used instead, so frameshift
+observations are inferred from its protein alignment gaps.
+
+Diamond and MMseqs2 can produce different results for the same input. They use
+different search heuristics, sensitivity settings, scoring matrices, alignment
+and tie-breaking behavior, and database formats (`.dmnd` versus FASTA). Their
+coverage options are also not implemented identically. Therefore, borderline
+hits may pass one engine's identity or coverage filters but not the other's,
+and hit ordering or reported scores can differ even when both engines find the
+same reference. In MMseqs2 mode, translated pseudogene searches additionally
+infer frameshift observations from protein alignment gaps rather than using
+Diamond's frameshift-aware `blastx` model.
+
+For a local comparison, the following commands were run successfully against
+the light database and the same test genome:
+
+```bash
+bakta --db ./bakta_db_light -o testgenome_mmseqs --usemmseqs testgenome.fasta
+bakta --db ./bakta_db_light -o testgenome_dmnd testgenome.fasta
 ```
 
 ## Annotation Workflow
@@ -502,7 +534,7 @@ Conceptual terms:
 3. Detect translational exceptions (selenocysteines)
 4. Import of superseding user-provided CDS regions (optional)
 5. Detection of UPSs via MD5 digests and lookup of related IPS and PCS
-6. Sequence alignments of remainder via Diamond vs. PSC (query/subject coverage=0.8, identity=0.5)
+6. Sequence alignments of remainder via Diamond or MMseqs2 vs. PSC (selected with `--usediamond` or `--usemmseqs`; query/subject coverage=0.8, identity=0.5)
 7. Assignment to UniRef90 or UniRef50 clusters if alignment hits achieve identities larger than 0.9 or 0.5, respectively
 8. Execution of expert systems:
    - AMR: AMRFinderPlus
@@ -511,7 +543,7 @@ Conceptual terms:
 9. Prediction of signal peptides (optionally via `--gram <+/->`)
 10. Detection of pseudogenes:
    1. Search for reference PCSs using `hypothetical` CDS as seed sequences
-   2. Translated alignment (blastx) of reference PCSs against up-/downstream-elongated CDS regions
+   2. Translated alignment of reference PCSs against up-/downstream-elongated CDS regions using Diamond `blastx` by default or MMseqs2 translated search with `--usemmseqs`
    3. Analysis of translated alignments and detection of pseudogenization causes & effects
 11. Combination of IPS, PSC, PSCC and expert system information favouring more specific annotations and avoiding redundancy
 

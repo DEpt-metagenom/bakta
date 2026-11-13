@@ -17,6 +17,7 @@ dependencies:
   - piler-cr
   - pyhmmer>=0.12.0
   - diamond==2.2.0
+  - mmseqs2>=18.8
   - blast>=2.17.0
   - ncbi-amrfinderplus>=4.2.7
   - pycirclize>=1.7.0

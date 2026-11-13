@@ -83,6 +83,7 @@ def main():
         if(cfg.keep_sequence_headers): print(f'\tkeep/sequence headers: {cfg.keep_sequence_headers}')
         print(f'\tprefix: {cfg.prefix}')
         print(f'\tthreads: {cfg.threads}')
+        print(f'\tsearch engine: {"MMseqs2" if cfg.use_mmseqs else "Diamond"}')
         if(cfg.debug): print(f'\tdebug: {cfg.debug}')
         if(cfg.skip_trna): print(f'\tskip tRNA: {cfg.skip_trna}')
         if(cfg.skip_tmrna): print(f'\tskip tmRNA: {cfg.skip_tmrna}')
@@ -301,8 +302,10 @@ def main():
             expert_amr_found = exp_amr.search(cdss, cds_aa_path)
             print(f'\t\tamrfinder: {len(expert_amr_found)}')
             log.debug('conduct expert system: aa seqs')
-            diamond_db_path = cfg.db_path.joinpath('expert-protein-sequences.dmnd')
-            expert_aa_found = exp_aa_seq.search(cdss, cds_aa_path, 'expert_proteins', diamond_db_path)
+            expert_db_path = cfg.db_path.joinpath(
+                'expert-protein-sequences.fasta' if cfg.use_mmseqs else 'expert-protein-sequences.dmnd'
+            )
+            expert_aa_found = exp_aa_seq.search(cdss, cds_aa_path, 'expert_proteins', expert_db_path)
             print(f'\t\tprotein sequences: {len(expert_aa_found)}')
 
             if(cfg.user_proteins):

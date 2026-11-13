@@ -52,6 +52,7 @@ def main():
     arg_group_general.add_argument('--threads', '-t', action='store', type=int, default=0, help='Number of threads to use (default = number of available CPUs)')
     arg_group_general.add_argument('--tmp-dir', action='store', default=None, dest='tmp_dir', help='Location for temporary files (default = system dependent auto detection)')
     arg_group_general.add_argument('--version', '-V', action='version', version=f'%(prog)s {cfg.version}')
+    bu.add_search_engine_arguments(parser)
     args = parser.parse_args()
 
     ############################################################################
@@ -90,6 +91,7 @@ def main():
     cfg.check_threads(args)
     cfg.skip_cds = False  # circumvent main config setup
     cfg.debug = args.debug
+    cfg.use_mmseqs = args.use_mmseqs
     log.info('debug=%s', cfg.debug)
     cfg.verbose = True if cfg.debug else args.verbose
     log.info('verbose=%s', cfg.verbose)
@@ -256,8 +258,10 @@ def annotate_aa(aas: Sequence[dict]):
     expert_amr_found = exp_amr.search(aas, aa_path)
     print(f'\t\tamrfinder: {len(expert_amr_found)}')
     log.debug('conduct expert system: aa seqs')
-    diamond_db_path = cfg.db_path.joinpath('expert-protein-sequences.dmnd')
-    expert_aa_found = exp_aa_seq.search(aas, aa_path, 'expert_proteins', diamond_db_path)
+    expert_db_path = cfg.db_path.joinpath(
+        'expert-protein-sequences.fasta' if cfg.use_mmseqs else 'expert-protein-sequences.dmnd'
+    )
+    expert_aa_found = exp_aa_seq.search(aas, aa_path, 'expert_proteins', expert_db_path)
     print(f'\t\tprotein sequences: {len(expert_aa_found)}')
     if(cfg.user_proteins):
         log.debug('conduct expert system: user aa seqs')

@@ -1,5 +1,4 @@
 import logging
-import subprocess as sp
 import sys
 
 from pathlib import Path
@@ -11,6 +10,7 @@ from xopen import xopen
 import bakta.config as cfg
 import bakta.constants as bc
 import bakta.features.orf as orf
+import bakta.utils as bu
 
 
 log = logging.getLogger('EXPERT_AA_SEQ')
@@ -19,34 +19,40 @@ log = logging.getLogger('EXPERT_AA_SEQ')
 def search(cdss: Sequence[dict], cds_fasta_path: Path, expert_system: str, db_path: Path):
     """Conduct homology search of CDSs against PCS db."""
     diamond_output_path = cfg.tmp_path.joinpath('diamond.cds.expert.tsv')
-    cmd = [
-        'diamond',
-        'blastp',
-        '--query', str(cds_fasta_path),
-        '--db', str(db_path),
-        '--out', str(diamond_output_path),
-        '--max-target-seqs', '1',  # single best output
-        '--outfmt', '6', 'qseqid', 'sseqid', 'qlen', 'slen', 'length', 'pident', 'evalue', 'bitscore', 'stitle',
-        '--threads', str(cfg.threads),
-        '--load-threads', str(min(cfg.threads, 8)),  # limit load threads to max 8
-        '--tmpdir', str(cfg.tmp_path),  # use tmp folder
-        '--block-size', '4',  # increase block size for faster executions
-        '--index-chunks', '1',  # set index chunks to 1 for faster executions
-        '--sensitive'
-    ]
+    if(cfg.use_mmseqs):
+        cmd = bu.build_mmseqs_easy_search_command(
+            database=db_path,
+            query=cds_fasta_path,
+            output=diamond_output_path,
+            output_fields=('query', 'target', 'qlen', 'tlen', 'alnlen', 'pident', 'evalue', 'bits', 'theader'),
+        )
+    else:
+        cmd = [
+            'diamond',
+            'blastp',
+            '--query', str(cds_fasta_path),
+            '--db', str(db_path),
+            '--out', str(diamond_output_path),
+            '--max-target-seqs', '1',  # single best output
+            '--outfmt', '6', 'qseqid', 'sseqid', 'qlen', 'slen', 'length', 'pident', 'evalue', 'bitscore', 'stitle',
+            '--threads', str(cfg.threads),
+            '--load-threads', str(min(cfg.threads, 8)),  # limit load threads to max 8
+            '--tmpdir', str(cfg.tmp_path),  # use tmp folder
+            '--block-size', '4',  # increase block size for faster executions
+            '--index-chunks', '1',  # set index chunks to 1 for faster executions
+            '--sensitive'
+        ]
     log.debug('cmd=%s', cmd)
-    proc = sp.run(
+    proc = bu.run_tool(
         cmd,
         cwd=str(cfg.tmp_path),
         env=cfg.env,
-        stdout=sp.PIPE,
-        stderr=sp.PIPE,
-        universal_newlines=True
     )
     if(proc.returncode != 0):
         log.debug('stdout=\'%s\', stderr=\'%s\'', proc.stdout, proc.stderr)
-        log.warning('diamond failed! diamond-error-code=%d', proc.returncode)
-        raise Exception(f'diamond error! error code: {proc.returncode}')
+        tool = 'mmseqs' if cfg.use_mmseqs else 'diamond'
+        log.warning('%s failed! %s-error-code=%d', tool, tool, proc.returncode)
+        raise Exception(f'{tool} error! error code: {proc.returncode}')
 
     cds_found = set()
     cds_by_hexdigest = orf.get_orf_dictionary(cdss)

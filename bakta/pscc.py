@@ -1,6 +1,4 @@
 import logging
-import subprocess as sp
-
 from concurrent.futures import ThreadPoolExecutor
 from typing import Sequence, Tuple
 
@@ -26,36 +24,36 @@ def search(cdss: Sequence[dict]) -> Tuple[Sequence[dict], Sequence[dict], Sequen
     orf.write_internal_faa(cdss, cds_aa_path)
     diamond_output_path = cfg.tmp_path.joinpath('diamond.pscc.tsv')
     diamond_db_path = cfg.db_path.joinpath('pscc.dmnd')
-    cmd = [
-        'diamond',
-        'blastp',
-        '--db', str(diamond_db_path),
-        '--query', str(cds_aa_path),
-        '--out', str(diamond_output_path),
-        '--id', str(int(bc.MIN_PSCC_IDENTITY * 100)),  # '50',
-        '--query-cover', str(int(bc.MIN_PSC_COVERAGE * 100)),  # '80'
-        '--subject-cover', str(int(bc.MIN_PSC_COVERAGE * 100)),  # '80'
-        '--max-target-seqs', '1',  # single best output
-        '--outfmt', '6', 'qseqid', 'sseqid', 'qlen', 'slen', 'length', 'pident', 'evalue', 'bitscore',
-        '--threads', str(cfg.threads),
-        '--load-threads', str(min(cfg.threads, 8)),  # limit load threads to max 8
-        '--tmpdir', str(cfg.tmp_path),  # use tmp folder
-        '--block-size', '3',  # slightly increase block size for faster executions
-        '--fast'
-    ]
+    if(cfg.use_mmseqs):
+        cmd = bu.build_mmseqs_easy_search_command(
+            database=cfg.db_path.joinpath('pscc.fasta'),
+            query=cds_aa_path,
+            output=diamond_output_path,
+            output_fields=('query', 'target', 'qlen', 'tlen', 'alnlen', 'pident', 'evalue', 'bits'),
+            identity=bc.MIN_PSCC_IDENTITY,
+            query_cover=bc.MIN_PSC_COVERAGE,
+            subject_cover=bc.MIN_PSC_COVERAGE,
+        )
+    else:
+        cmd = bu.build_diamond_blastp_command(
+            database=diamond_db_path,
+            query=cds_aa_path,
+            output=diamond_output_path,
+            identity=bc.MIN_PSCC_IDENTITY,
+            query_cover=bc.MIN_PSC_COVERAGE,
+            subject_cover=bc.MIN_PSC_COVERAGE,
+        )
     log.debug('cmd=%s', cmd)
-    proc = sp.run(
+    proc = bu.run_tool(
         cmd,
         cwd=str(cfg.tmp_path),
         env=cfg.env,
-        stdout=sp.PIPE,
-        stderr=sp.PIPE,
-        universal_newlines=True
     )
     if(proc.returncode != 0):
         log.debug('stdout=\'%s\', stderr=\'%s\'', proc.stdout, proc.stderr)
-        log.warning('PSC failed! diamond-error-code=%d', proc.returncode)
-        raise Exception(f'diamond error! error code: {proc.returncode}')
+        tool = 'mmseqs' if cfg.use_mmseqs else 'diamond'
+        log.warning('PSCC failed! %s-error-code=%d', tool, proc.returncode)
+        raise Exception(f'{tool} error! error code: {proc.returncode}')
 
     cds_by_hexdigest = orf.get_orf_dictionary(cdss)
     with diamond_output_path.open() as fh:

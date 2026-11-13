@@ -1,8 +1,6 @@
 import concurrent.futures as cf
 import logging
 import math
-import subprocess as sp
-
 from collections import OrderedDict
 from typing import Sequence
 
@@ -314,46 +312,55 @@ def search(sorfs: Sequence[dict], cluster_type: str):
     orf.write_internal_faa(sorfs, sorf_aa_path)
     diamond_output_path = cfg.tmp_path.joinpath('diamond.sorf.tsv')
     diamond_db_path = cfg.db_path.joinpath('sorf.dmnd')
-    cmd = [
-        'diamond', 'blastp',
-        '--db', str(diamond_db_path),
-        '--query', str(sorf_aa_path),
-        '--out', str(diamond_output_path),
-        '--id', str(int(bc.MIN_SORF_IDENTITY * 100)),  # '90',
-        '--query-cover', str(int(bc.MIN_SORF_COVERAGE * 100)),  # '90'
-        '--subject-cover', str(int(bc.MIN_SORF_COVERAGE * 100)),  # '90'
-        '--max-target-seqs', '1',  # single best output
-        '--matrix', 'BLOSUM62',
-        '--masking', '0',
-        '--soft-masking', '0',
-        '--motif-masking', '0',
-        '--comp-based-stats', '0',
-        '--evalue', '1',
-        '--outfmt', '6', 'qseqid', 'sseqid', 'qlen', 'slen', 'length', 'pident', 'evalue', 'bitscore',
-        '--threads', str(cfg.threads),
-        '--load-threads', str(min(cfg.threads, 8)),  # limit load threads to max 8
-        '--tmpdir', str(cfg.tmp_path),  # use tmp folder
-        '--block-size', '3',  # slightly increase block size for faster executions
-        '--ultra-sensitive',
-        '--shape-mask', '11111',
-        '--id2', '1',
-        '--ungapped-evalue', '1',
-        '--ungapped-evalue-short', '1',
-        '--gapped-filter-evalue', '1',
-    ]
+    if(cfg.use_mmseqs):
+        cmd = bu.build_mmseqs_easy_search_command(
+            database=cfg.db_path.joinpath('sorf.fasta'),
+            query=sorf_aa_path,
+            output=diamond_output_path,
+            output_fields=('query', 'target', 'qlen', 'tlen', 'alnlen', 'pident', 'evalue', 'bits'),
+            identity=bc.MIN_SORF_IDENTITY,
+            query_cover=bc.MIN_SORF_COVERAGE,
+            subject_cover=bc.MIN_SORF_COVERAGE,
+        )
+    else:
+        cmd = [
+            'diamond', 'blastp',
+            '--db', str(diamond_db_path),
+            '--query', str(sorf_aa_path),
+            '--out', str(diamond_output_path),
+            '--id', str(int(bc.MIN_SORF_IDENTITY * 100)),  # '90',
+            '--query-cover', str(int(bc.MIN_SORF_COVERAGE * 100)),  # '90'
+            '--subject-cover', str(int(bc.MIN_SORF_COVERAGE * 100)),  # '90'
+            '--max-target-seqs', '1',  # single best output
+            '--matrix', 'BLOSUM62',
+            '--masking', '0',
+            '--soft-masking', '0',
+            '--motif-masking', '0',
+            '--comp-based-stats', '0',
+            '--evalue', '1',
+            '--outfmt', '6', 'qseqid', 'sseqid', 'qlen', 'slen', 'length', 'pident', 'evalue', 'bitscore',
+            '--threads', str(cfg.threads),
+            '--load-threads', str(min(cfg.threads, 8)),  # limit load threads to max 8
+            '--tmpdir', str(cfg.tmp_path),  # use tmp folder
+            '--block-size', '3',  # slightly increase block size for faster executions
+            '--ultra-sensitive',
+            '--shape-mask', '11111',
+            '--id2', '1',
+            '--ungapped-evalue', '1',
+            '--ungapped-evalue-short', '1',
+            '--gapped-filter-evalue', '1',
+        ]
     log.debug('cmd=%s', cmd)
-    proc = sp.run(
+    proc = bu.run_tool(
         cmd,
         cwd=str(cfg.tmp_path),
         env=cfg.env,
-        stdout=sp.PIPE,
-        stderr=sp.PIPE,
-        universal_newlines=True
     )
     if(proc.returncode != 0):
         log.debug('stdout=\'%s\', stderr=\'%s\'', proc.stdout, proc.stderr)
-        log.warning('sORF failed! diamond-error-code=%d', proc.returncode)
-        raise Exception(f'diamond error! error code: {proc.returncode}')
+        tool = 'mmseqs' if cfg.use_mmseqs else 'diamond'
+        log.warning('sORF failed! %s-error-code=%d', tool, proc.returncode)
+        raise Exception(f'{tool} error! error code: {proc.returncode}')
 
     sorf_by_aa_digest = orf.get_orf_dictionary(sorfs)
     with diamond_output_path.open() as fh:

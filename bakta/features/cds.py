@@ -2,7 +2,6 @@ import concurrent.futures as cf
 import copy
 import logging
 import re
-import subprocess as sp
 import sys
 import xml.etree.ElementTree as ET
 
@@ -589,42 +588,55 @@ def predict_pseudo_candidates(hypotheticals: Sequence[dict]) -> Sequence[dict]:
     cds_hypotheticals_faa_path = cfg.tmp_path.joinpath('cds.pseudo.candidates.faa')
     orf.write_internal_faa(hypotheticals, cds_hypotheticals_faa_path)
     # TODO allow multiple hits
-    cmd = [
-        'diamond',
-        'blastp',
-        '--db', str(diamond_db_path),
-        '--query', str(cds_hypotheticals_faa_path),
-        '--out', str(diamond_output_path),
-        '--id', str(int(bc.MIN_PSEUDOGENE_IDENTITY * 100)),                     # '80'
-        '--query-cover', str(int(bc.MIN_PSEUDOGENE_QUERY_COVERAGE * 100)),      # '80'
-        '--subject-cover', str(int(bc.MIN_PSEUDOGENE_SUBJECT_COVERAGE * 100)),  # '40'
-        '--max-target-seqs', '1',  # single best output
-        '--outfmt', '6', 'qseqid', 'sseqid', 'qlen', 'slen', 'length', 'pident', 'evalue', 'bitscore', 'qstart', 'qend', 'sstart', 'send', 'full_sseq',
-        '--threads', str(cfg.threads),
-        '--load-threads', str(min(cfg.threads, 8)),  # limit load threads to max 8
-        '--tmpdir', str(cfg.tmp_path),
-        '--block-size', '3',  # slightly increase block size for faster executions
-        '--fast'
-    ]
+    if(cfg.use_mmseqs):
+        cmd = bu.build_mmseqs_easy_search_command(
+            database=cfg.db_path.joinpath('psc.fasta'),
+            query=cds_hypotheticals_faa_path,
+            output=diamond_output_path,
+            output_fields=('query', 'target', 'qlen', 'tlen', 'alnlen', 'pident', 'evalue', 'bits', 'qstart', 'qend', 'tstart', 'tend', 'tseq'),
+            identity=bc.MIN_PSEUDOGENE_IDENTITY,
+            query_cover=bc.MIN_PSEUDOGENE_QUERY_COVERAGE,
+            subject_cover=bc.MIN_PSEUDOGENE_SUBJECT_COVERAGE,
+            max_seqs=300,
+        )
+    else:
+        cmd = [
+            'diamond',
+            'blastp',
+            '--db', str(diamond_db_path),
+            '--query', str(cds_hypotheticals_faa_path),
+            '--out', str(diamond_output_path),
+            '--id', str(int(bc.MIN_PSEUDOGENE_IDENTITY * 100)),                     # '80'
+            '--query-cover', str(int(bc.MIN_PSEUDOGENE_QUERY_COVERAGE * 100)),      # '80'
+            '--subject-cover', str(int(bc.MIN_PSEUDOGENE_SUBJECT_COVERAGE * 100)),  # '40'
+            '--max-target-seqs', '1',  # single best output
+            '--outfmt', '6', 'qseqid', 'sseqid', 'qlen', 'slen', 'length', 'pident', 'evalue', 'bitscore', 'qstart', 'qend', 'sstart', 'send', 'full_sseq',
+            '--threads', str(cfg.threads),
+            '--load-threads', str(min(cfg.threads, 8)),  # limit load threads to max 8
+            '--tmpdir', str(cfg.tmp_path),
+            '--block-size', '3',  # slightly increase block size for faster executions
+            '--fast'
+        ]
     log.debug('cmd=%s', cmd)
-    proc = sp.run(
+    proc = bu.run_tool(
         cmd,
         cwd=str(cfg.tmp_path),
         env=cfg.env,
-        stdout=sp.PIPE,
-        stderr=sp.PIPE,
-        universal_newlines=True
     )
     if proc.returncode != 0:  # exit-code 132 CORE DUMP -> CPU misses AVX extension
         log.debug('stdout=\'%s\', stderr=\'%s\'', proc.stdout, proc.stderr)
-        log.warning('Diamond failed! diamond-error-code=%d', proc.returncode)
-        raise Exception(f'diamond error! error code: {proc.returncode}')
+        tool = 'mmseqs' if cfg.use_mmseqs else 'diamond'
+        log.warning('%s failed! %s-error-code=%d', tool, tool, proc.returncode)
+        raise Exception(f'{tool} error! error code: {proc.returncode}')
 
     pseudo_candidates = []
+    pseudo_candidate_ids = set()
     cds_by_hexdigest = orf.get_orf_dictionary(hypotheticals)
     with diamond_output_path.open() as fh:
         for line in fh:
             (aa_identifier, cluster_id, query_length, subject_length, alignment_length, identity, evalue, bitscore, query_start, query_end, subject_start, subject_end, subject_sequence) = line.rstrip('\n').split('\t')
+            if(cfg.use_mmseqs and aa_identifier in pseudo_candidate_ids):
+                continue
             cds = cds_by_hexdigest[aa_identifier]
             query_cov = int(alignment_length) / len(cds['aa'])
             subject_cov = int(alignment_length) / int(subject_length)
@@ -646,6 +658,7 @@ def predict_pseudo_candidates(hypotheticals: Sequence[dict]) -> Sequence[dict]:
                     'reference_sequence': subject_sequence
                 }
                 pseudo_candidates.append(cds)
+                pseudo_candidate_ids.add(aa_identifier)
                 log.debug(
                     'pseudogene-candidate: seq=%s, start=%i, stop=%i, strand=%s, aa-length=%i, query-cov=%0.3f, subject-cov=%0.3f, identity=%0.3f, score=%0.1f, evalue=%1.1e, UniRef90=%s',
                     cds['sequence'], cds['start'], cds['stop'], cds['strand'], len(cds['aa']), query_cov, subject_cov, identity, bitscore, evalue, cluster_id
@@ -656,13 +669,14 @@ def predict_pseudo_candidates(hypotheticals: Sequence[dict]) -> Sequence[dict]:
 
 def detect_pseudogenes(candidates: Sequence[dict], cdss: Sequence[dict], data: dict) -> Sequence[dict]:
     """
-    Conduct a BLASTX search of 5'/3'-extended sequences of pseudogene candidates against matching PSCs.
+    Search 5'/3'-extended sequences of pseudogene candidates against matching PSCs.
     Search for and determine possible pseudogenization causes in the resulting alignments.
     """
     psc_references_faa_path = cfg.tmp_path.joinpath('cds.pseudo.references.faa')
-    psc_references_dmnd_path = cfg.tmp_path.joinpath('cds.pseudo.references.dmnd')
     candidates_elongated_sequences_path = cfg.tmp_path.joinpath('cds.pseudo.elongated-sequences.fna')
-    candidates_blastx_output_path = cfg.tmp_path.joinpath('cds.pseudo.blastx.xml')
+    candidates_search_output_path = cfg.tmp_path.joinpath(
+        'cds.pseudo.mmseqs.tsv' if cfg.use_mmseqs else 'cds.pseudo.blastx.xml'
+    )
 
     # Write unique PSC cluster sequences to a FAA file
     with psc_references_faa_path.open(mode='w') as fh:
@@ -681,19 +695,33 @@ def detect_pseudogenes(candidates: Sequence[dict], cdss: Sequence[dict], data: d
             fh.write(f">{orf_key}\n{seq}\n")
             candidates_extended_positions[orf_key] = cds_elongated
 
-    commands = [
-        [
-            'diamond',
-            'makedb',
-            '--in', str(psc_references_faa_path),
-            '--db', str(psc_references_dmnd_path)
-        ],
-        [
+    if(cfg.use_mmseqs):
+        commands = [
+            bu.build_mmseqs_easy_search_command(
+                database=psc_references_faa_path,
+                query=candidates_elongated_sequences_path,
+                output=candidates_search_output_path,
+                output_fields=('query', 'target', 'alnlen', 'pident', 'evalue', 'bits', 'qstart', 'qend', 'qaln', 'taln'),
+                max_seqs=300,
+                search_type=2,
+                translation_table=cfg.translation_table,
+            )
+        ]
+    else:
+        psc_references_dmnd_path = cfg.tmp_path.joinpath('cds.pseudo.references.dmnd')
+        commands = [
+            [
+                'diamond',
+                'makedb',
+                '--in', str(psc_references_faa_path),
+                '--db', str(psc_references_dmnd_path)
+            ],
+            [
             'diamond',
             'blastx',
             '--db', str(psc_references_dmnd_path),  # PSC pseudogene candidates
             '--query', str(candidates_elongated_sequences_path),  # nucleotide sequences of hypotheticals
-            '--out', str(candidates_blastx_output_path),
+            '--out', str(candidates_search_output_path),
             '--outfmt', '5',
             '--threads', str(cfg.threads),
             '--tmpdir', str(cfg.tmp_path),  # use tmp folder
@@ -702,117 +730,156 @@ def detect_pseudogenes(candidates: Sequence[dict], cdss: Sequence[dict], data: d
             '--strand', 'plus',
             '--frameshift', '15',
             '--ultra-sensitive'
+            ]
         ]
-    ]
 
     for cmd in commands:
         log.debug('cmd=%s', cmd)
-        proc = sp.run(
+        proc = bu.run_tool(
             cmd,
             cwd=str(cfg.tmp_path),
             env=cfg.env,
-            stdout=sp.PIPE,
-            stderr=sp.PIPE,
-            universal_newlines=True
         )
         if proc.returncode != 0:
             log.debug('stdout=\'%s\', stderr=\'%s\'', proc.stdout, proc.stderr)
-            log.warning('PSEUDO failed! diamond-error-code=%d', proc.returncode)
-            raise Exception(f'diamond error! error code: {proc.returncode}\n{proc.stdout}')
+            tool = 'mmseqs' if cfg.use_mmseqs else 'diamond'
+            log.warning('PSEUDO failed! %s-error-code=%d', tool, proc.returncode)
+            raise Exception(f'{tool} error! error code: {proc.returncode}\n{proc.stdout}')
 
     pseudogenes = []
     cds_by_hexdigest = orf.get_orf_dictionary(candidates)
     uniref90_by_hexdigest = {aa_identifier: cds['psc']['uniref90_id'] for aa_identifier, cds in orf.get_orf_dictionary(cdss).items() if 'psc' in cds and 'uniref90_id' in cds['psc']}
-    with candidates_blastx_output_path.open() as fh:
-        root = ET.parse(fh).getroot()
-        for query in root.findall('./BlastOutput_iterations/Iteration'):
-            aa_identifier = query.find('Iteration_query-def').text
-            cds = cds_by_hexdigest[aa_identifier]
-            extended_positions = candidates_extended_positions[aa_identifier]
-            for hit in query.findall('./Iteration_hits/Hit'):
-                cluster_id = hit.find('Hit_id').text
-                if cluster_id == cds['pseudo-inference'][DB_PSC_COL_UNIREF90]:
-                    query_alignment = hit.find('Hit_hsps/Hsp/Hsp_qseq').text
-                    ref_alignment = hit.find('Hit_hsps/Hsp/Hsp_hseq').text
-                    query_alignment_start = int(hit.find('Hit_hsps/Hsp/Hsp_query-from').text)
-                    query_alignment_stop = int(hit.find('Hit_hsps/Hsp/Hsp_query-to').text)
-                    alignment_length = int(hit.find('Hit_hsps/Hsp/Hsp_align-len').text)
-                    identity = float(hit.find('Hit_hsps/Hsp/Hsp_identity').text) / alignment_length
-                    bitscore = float(hit.find('Hit_hsps/Hsp/Hsp_bit-score').text)
-                    evalue = float(hit.find('Hit_hsps/Hsp/Hsp_evalue').text)
+    alignments = []
+    with candidates_search_output_path.open() as fh:
+        if(cfg.use_mmseqs):
+            for line in fh:
+                (
+                    aa_identifier, cluster_id, alignment_length, identity, evalue, bitscore,
+                    query_alignment_start, query_alignment_stop, query_alignment, ref_alignment
+                ) = line.rstrip('\n').split('\t')
+                normalized_query_alignment = []
+                normalized_ref_alignment = []
+                for query_char, ref_char in zip(query_alignment, ref_alignment):
+                    if query_char == '-' and ref_char != '-':
+                        normalized_query_alignment.append('\\')
+                        normalized_ref_alignment.append(ref_char)
+                    elif query_char != '-' and ref_char == '-':
+                        normalized_query_alignment.append('/')
+                        normalized_ref_alignment.append('-')
+                    else:
+                        normalized_query_alignment.append(query_char)
+                        normalized_ref_alignment.append(ref_char)
+                alignments.append((
+                    aa_identifier,
+                    cluster_id,
+                    ''.join(normalized_query_alignment),
+                    ''.join(normalized_ref_alignment),
+                    int(query_alignment_start),
+                    int(query_alignment_stop),
+                    int(alignment_length),
+                    float(identity) / 100,
+                    float(bitscore),
+                    float(evalue),
+                ))
+        else:
+            root = ET.parse(fh).getroot()
+            for query in root.findall('./BlastOutput_iterations/Iteration'):
+                aa_identifier = query.find('Iteration_query-def').text
+                for hit in query.findall('./Iteration_hits/Hit'):
+                    alignments.append((
+                        aa_identifier,
+                        hit.find('Hit_id').text,
+                        hit.find('Hit_hsps/Hsp/Hsp_qseq').text,
+                        hit.find('Hit_hsps/Hsp/Hsp_hseq').text,
+                        int(hit.find('Hit_hsps/Hsp/Hsp_query-from').text),
+                        int(hit.find('Hit_hsps/Hsp/Hsp_query-to').text),
+                        int(hit.find('Hit_hsps/Hsp/Hsp_align-len').text),
+                        float(hit.find('Hit_hsps/Hsp/Hsp_identity').text) / int(hit.find('Hit_hsps/Hsp/Hsp_align-len').text),
+                        float(hit.find('Hit_hsps/Hsp/Hsp_bit-score').text),
+                        float(hit.find('Hit_hsps/Hsp/Hsp_evalue').text),
+                    ))
 
-                    if alignment_length == len(cds['aa']):  # skip non-extended genes (full match)
-                        log.debug(
-                            'no pseudogene (full match): seq=%s, start=%i, stop=%i, strand=%s',
-                            cds['sequence'], cds['start'], cds['stop'], cds['strand']
-                        )
-                        continue
+    for (
+        aa_identifier, cluster_id, query_alignment, ref_alignment,
+        query_alignment_start, query_alignment_stop, alignment_length,
+        identity, bitscore, evalue
+    ) in alignments:
+        cds = cds_by_hexdigest[aa_identifier]
+        extended_positions = candidates_extended_positions[aa_identifier]
+        if cluster_id == cds['pseudo-inference'][DB_PSC_COL_UNIREF90]:
 
-                    observations, positions = detect_pseudogenization_observations(
-                        query_alignment,
-                        ref_alignment,
-                        query_alignment_start,
-                        query_alignment_stop,
-                        extended_positions,
-                        cds
-                    )
+            if alignment_length == len(cds['aa']):  # skip non-extended genes (full match)
+                log.debug(
+                    'no pseudogene (full match): seq=%s, start=%i, stop=%i, strand=%s',
+                    cds['sequence'], cds['start'], cds['stop'], cds['strand']
+                )
+                continue
 
-                    directions = observations.get('directions', [])
-                    if bc.FEATURE_END_5_PRIME in directions or bc.FEATURE_END_3_PRIME in directions:
-                        pseudogene = {
-                            'start': positions['start'],
-                            'stop': positions['stop'],
-                            'observations': clean_observations(observations),
-                            'inference': cds['pseudo-inference'],
-                            'paralog': is_paralog(uniref90_by_hexdigest, aa_identifier, cluster_id),
-                            'identity': identity,
-                            'score': bitscore,
-                            'evalue': evalue
-                        }
+            observations, positions = detect_pseudogenization_observations(
+                query_alignment,
+                ref_alignment,
+                query_alignment_start,
+                query_alignment_stop,
+                extended_positions,
+                cds
+            )
 
-                        effects = []
-                        if len(observations.get(bc.PSEUDOGENE_EFFECT_START, [])) > 0:
-                            start_codon = ', '.join(map(str, observations[bc.PSEUDOGENE_EFFECT_START]))
-                            effects.append(f'Internal start codon at {start_codon}')
-                        if len(observations.get(bc.PSEUDOGENE_EFFECT_STOP, [])) > 0:
-                            stop_codon = ', '.join(map(str, observations[bc.PSEUDOGENE_EFFECT_STOP]))
-                            effects.append(f'Internal stop codon at {stop_codon}')
-                        effects = '; '.join(effects)
+            directions = observations.get('directions', [])
+            if bc.FEATURE_END_5_PRIME in directions or bc.FEATURE_END_3_PRIME in directions:
+                pseudogene = {
+                    'start': positions['start'],
+                    'stop': positions['stop'],
+                    'observations': clean_observations(observations),
+                    'inference': cds['pseudo-inference'],
+                    'paralog': is_paralog(uniref90_by_hexdigest, aa_identifier, cluster_id),
+                    'identity': identity,
+                    'score': bitscore,
+                    'evalue': evalue
+                }
 
-                        causes = []
-                        if len(observations.get(bc.PSEUDOGENE_CAUSE_INSERTION, [])) > 0:
-                            insertions = ', '.join(map(str, observations[bc.PSEUDOGENE_CAUSE_INSERTION]))
-                            causes.append(f"Frameshift due to insertion around {insertions}.")
-                        if len(observations.get(bc.PSEUDOGENE_CAUSE_DELETION, [])) > 0:
-                            deletions = ', '.join(map(str, observations[bc.PSEUDOGENE_CAUSE_DELETION]))
-                            causes.append(f"Frameshift due to deletion around {deletions}.")
-                        if len(observations.get(bc.PSEUDOGENE_CAUSE_MUTATION, [])) > 0:
-                            mutations = ', '.join(map(str, observations[bc.PSEUDOGENE_CAUSE_MUTATION]))
-                            causes.append(f"Nonsense mutation around {mutations}.")
-                        # if observations.get(bc.PSEUDOGENE_EXCEPTION_SELENOCYSTEINE, None):  # only for pseudogenes with translation exception + other cause
-                        #     causes.append('Translation exception: Selenocysteine around ' + ', '.join(map(str, observations[bc.PSEUDOGENE_EXCEPTION_SELENOCYSTEINE])) + '.')
-                        # if observations.get(bc.PSEUDOGENE_EXCEPTION_PYROLYSINE, None):  # only for pseudogenes with translation exception + other cause
-                        #     causes.append('Translation exception: Pyrolysin around ' + ', '.join(map(str, observations[bc.PSEUDOGENE_EXCEPTION_PYROLYSINE])) + '.')
-                        causes = ' '.join(causes)  # pseudogene cause
-                        pseudogene['description'] = f"{effects}. {causes}" if effects != '' else causes
+                effects = []
+                if len(observations.get(bc.PSEUDOGENE_EFFECT_START, [])) > 0:
+                    start_codon = ', '.join(map(str, observations[bc.PSEUDOGENE_EFFECT_START]))
+                    effects.append(f'Internal start codon at {start_codon}')
+                if len(observations.get(bc.PSEUDOGENE_EFFECT_STOP, [])) > 0:
+                    stop_codon = ', '.join(map(str, observations[bc.PSEUDOGENE_EFFECT_STOP]))
+                    effects.append(f'Internal stop codon at {stop_codon}')
+                effects = '; '.join(effects)
 
-                        if bc.FEATURE_END_5_PRIME in directions and bc.FEATURE_END_3_PRIME in directions:
-                            cds['truncated'] = bc.FEATURE_END_BOTH
-                        elif bc.FEATURE_END_5_PRIME in directions:
-                            cds['truncated'] = bc.FEATURE_END_5_PRIME if cds['strand'] == bc.STRAND_FORWARD else bc.FEATURE_END_3_PRIME
-                        elif bc.FEATURE_END_3_PRIME in directions:
-                            cds['truncated'] = bc.FEATURE_END_3_PRIME if cds['strand'] == bc.STRAND_FORWARD else bc.FEATURE_END_5_PRIME
-                        cds[bc.PSEUDOGENE] = pseudogene
-                        cds.pop('hypothetical')
-                        pseudogenes.append(cds)
-                        log.info(
-                            'pseudogene: seq=%s, start=%i, stop=%i, strand=%s, insertions=%s, deletions=%s, mutations=%s, effect=%s',
-                            cds['sequence'], cds['start'], cds['stop'], cds['strand'], observations.get(bc.PSEUDOGENE_CAUSE_INSERTION, []), observations.get(bc.PSEUDOGENE_CAUSE_DELETION, []), observations.get(bc.PSEUDOGENE_CAUSE_MUTATION, []), effects
-                        )
+                causes = []
+                if len(observations.get(bc.PSEUDOGENE_CAUSE_INSERTION, [])) > 0:
+                    insertions = ', '.join(map(str, observations[bc.PSEUDOGENE_CAUSE_INSERTION]))
+                    causes.append(f"Frameshift due to insertion around {insertions}.")
+                if len(observations.get(bc.PSEUDOGENE_CAUSE_DELETION, [])) > 0:
+                    deletions = ', '.join(map(str, observations[bc.PSEUDOGENE_CAUSE_DELETION]))
+                    causes.append(f"Frameshift due to deletion around {deletions}.")
+                if len(observations.get(bc.PSEUDOGENE_CAUSE_MUTATION, [])) > 0:
+                    mutations = ', '.join(map(str, observations[bc.PSEUDOGENE_CAUSE_MUTATION]))
+                    causes.append(f"Nonsense mutation around {mutations}.")
+                # if observations.get(bc.PSEUDOGENE_EXCEPTION_SELENOCYSTEINE, None):  # only for pseudogenes with translation exception + other cause
+                #     causes.append('Translation exception: Selenocysteine around ' + ', '.join(map(str, observations[bc.PSEUDOGENE_EXCEPTION_SELENOCYSTEINE)) + '.')
+                # if observations.get(bc.PSEUDOGENE_EXCEPTION_PYROLYSINE, None):  # only for pseudogenes with translation exception + other cause
+                #     causes.append('Translation exception: Pyrolysin around ' + ', '.join(map(str, observations[bc.PSEUDOGENE_EXCEPTION_PYROLYSINE)) + '.')
+                causes = ' '.join(causes)  # pseudogene cause
+                pseudogene['description'] = f"{effects}. {causes}" if effects != '' else causes
 
-                    elif observations[bc.PSEUDOGENE_EXCEPTION_SELENOCYSTEINE] or observations[bc.PSEUDOGENE_EXCEPTION_PYROLYSINE]:
-                        # TODO handle translation exceptions, correct annotation
-                        pass
+                if bc.FEATURE_END_5_PRIME in directions and bc.FEATURE_END_3_PRIME in directions:
+                    cds['truncated'] = bc.FEATURE_END_BOTH
+                elif bc.FEATURE_END_5_PRIME in directions:
+                    cds['truncated'] = bc.FEATURE_END_5_PRIME if cds['strand'] == bc.STRAND_FORWARD else bc.FEATURE_END_3_PRIME
+                elif bc.FEATURE_END_3_PRIME in directions:
+                    cds['truncated'] = bc.FEATURE_END_3_PRIME if cds['strand'] == bc.STRAND_FORWARD else bc.FEATURE_END_5_PRIME
+                cds[bc.PSEUDOGENE] = pseudogene
+                cds.pop('hypothetical')
+                pseudogenes.append(cds)
+                log.info(
+                    'pseudogene: seq=%s, start=%i, stop=%i, strand=%s, insertions=%s, deletions=%s, mutations=%s, effect=%s',
+                    cds['sequence'], cds['start'], cds['stop'], cds['strand'], observations.get(bc.PSEUDOGENE_CAUSE_INSERTION, []), observations.get(bc.PSEUDOGENE_CAUSE_DELETION, []), observations.get(bc.PSEUDOGENE_CAUSE_MUTATION, []), effects
+                )
+
+            elif observations[bc.PSEUDOGENE_EXCEPTION_SELENOCYSTEINE] or observations[bc.PSEUDOGENE_EXCEPTION_PYROLYSINE]:
+                # TODO handle translation exceptions, correct annotation
+                pass
 
     for cds in candidates:
         cds.pop('pseudo-inference')
