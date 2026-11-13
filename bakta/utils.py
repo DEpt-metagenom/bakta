@@ -47,6 +47,7 @@ DEPENDENCY_PILERCR = (Version(1, 6), Version(VERSION_MAX_DIGIT, VERSION_MAX_DIGI
 DEPENDENCY_PYRODIGAL = (Version(3, 7, 0), Version(VERSION_MAX_DIGIT, VERSION_MAX_DIGIT, VERSION_MAX_DIGIT), VERSION_REGEX, 'Pyrodigal', (sys.executable, '-c', 'import pyrodigal; print(pyrodigal.__version__)'), ['--skip-cds'])
 DEPENDENCY_PYHMMER = (Version(0, 12, 0), Version(VERSION_MAX_DIGIT, VERSION_MAX_DIGIT, VERSION_MAX_DIGIT), VERSION_REGEX, 'Pyhmmer', (sys.executable, '-c', 'import pyhmmer; print(pyhmmer.__version__)'), ['--skip-cds', '--skip-sorf'])
 DEPENDENCY_DIAMOND = (Version(2, 2, 0), Version(VERSION_MAX_DIGIT, VERSION_MAX_DIGIT, VERSION_MAX_DIGIT), VERSION_REGEX, 'Diamond', ('diamond', 'help'), ['--skip-cds', '--skip-sorf'])
+DEPENDENCY_MMSEQS = (Version(18, 8), Version(VERSION_MAX_DIGIT, VERSION_MAX_DIGIT, VERSION_MAX_DIGIT), VERSION_REGEX, 'MMseqs2', ('mmseqs', 'version'), ['--skip-cds', '--skip-sorf'])
 DEPENDENCY_BLASTN = (Version(2, 17, 0), Version(VERSION_MAX_DIGIT, VERSION_MAX_DIGIT, VERSION_MAX_DIGIT), VERSION_REGEX, 'Blastn', ('blastn', '-version'), ['--skip-ori'])
 DEPENDENCY_AMRFINDERPLUS = (Version(4, 2, 7), Version(VERSION_MAX_DIGIT, VERSION_MAX_DIGIT, VERSION_MAX_DIGIT), VERSION_REGEX, 'AMRFinderPlus', ('amrfinder', '--version'), ['--skip-cds'])
 DEPENDENCY_PYCIRCLIZE = (Version(1, 7, 0), Version(VERSION_MAX_DIGIT, VERSION_MAX_DIGIT, VERSION_MAX_DIGIT), VERSION_REGEX, 'pyCirclize', (sys.executable, '-c', 'import pycirclize; print(pycirclize.__version__)'), ['--skip-plot'])
@@ -64,6 +65,14 @@ def init_parser(sub_command: str=''):
         add_help=False
     )
     return parser
+
+
+def add_search_engine_arguments(parser):
+    arg_group_search = parser.add_argument_group('Search engine')
+    search_engine = arg_group_search.add_mutually_exclusive_group()
+    search_engine.add_argument('--usediamond', dest='use_mmseqs', action='store_false', help='Use Diamond for protein sequence searches (default)')
+    search_engine.add_argument('--usemmseqs', dest='use_mmseqs', action='store_true', help='Use MMseqs2 for protein sequence searches')
+    parser.set_defaults(use_mmseqs=False)
 
 
 def parse_arguments():
@@ -115,6 +124,8 @@ def parse_arguments():
     arg_group_workflow.add_argument('--skip-filter', action='store_true', dest='skip_filter', help='Skip feature overlap filters')
     arg_group_workflow.add_argument('--skip-plot', action='store_true', dest='skip_plot', help='Skip generation of circular genome plots')
 
+    add_search_engine_arguments(parser)
+
     arg_group_general = parser.add_argument_group('General')
     arg_group_general.add_argument('--help', '-h', action='help', help='Show this help message and exit')
     arg_group_general.add_argument('--verbose', '-v', action='store_true', help='Print verbose information')
@@ -145,6 +156,108 @@ def setup_logger(output_path: Path, prefix: str, args: Namespace):
 def cleanup(log, tmp_path: Path):
     shutil.rmtree(str(tmp_path))  # remove tmp dir
     log.info('removed tmp dir: %s', tmp_path)
+
+
+def run_tool(command, cwd=None, env=None):
+    return sp.run(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=sp.PIPE,
+        stderr=sp.PIPE,
+        universal_newlines=True
+    )
+
+
+def build_diamond_blastp_command(
+    database: Path,
+    query: Path,
+    output: Path,
+    identity: float,
+    query_cover: float,
+    subject_cover: float,
+):
+    return [
+        'diamond',
+        'blastp',
+        '--db', str(database),
+        '--query', str(query),
+        '--out', str(output),
+        '--id', str(int(identity * 100)),
+        '--query-cover', str(int(query_cover * 100)),
+        '--subject-cover', str(int(subject_cover * 100)),
+        '--max-target-seqs', '1',
+        '--outfmt', '6', 'qseqid', 'sseqid', 'qlen', 'slen', 'length', 'pident', 'evalue', 'bitscore',
+        '--threads', str(cfg.threads),
+        '--load-threads', str(min(cfg.threads, 8)),
+        '--tmpdir', str(cfg.tmp_path),
+        '--block-size', '3',
+        '--fast'
+    ]
+
+
+def build_mmseqs_easy_search_command(
+    database: Path,
+    query: Path,
+    output: Path,
+    output_fields: Sequence[str],
+    identity: float = None,
+    query_cover: float = None,
+    subject_cover: float = None,
+    max_seqs: int = 1,
+    search_type: int = None,
+    translation_table: int = None,
+):
+    if(not database.is_file()):
+        raise FileNotFoundError(f'MMseqs2 FASTA database not found: {database}')
+
+    command = [
+        'mmseqs',
+        'easy-search',
+        str(query),
+        str(database),
+        str(output),
+        str(cfg.tmp_path.joinpath('mmseqs-tmp')),
+    ]
+    if(identity is not None):
+        command.extend(['--min-seq-id', str(identity)])
+    if(query_cover is not None and subject_cover is not None):
+        command.extend([
+            '-c', str(min(query_cover, subject_cover)),
+            '--cov-mode', '0',
+        ])
+    command.extend([
+        '--max-seqs', str(max_seqs),
+        '--format-output', ','.join(output_fields),
+        '--threads', str(cfg.threads),
+    ])
+    if(search_type is not None):
+        command.extend(['--search-type', str(search_type)])
+    if(translation_table is not None):
+        command.extend(['--translation-table', str(translation_table)])
+    return command
+
+
+def build_cmscan_command(
+    database: Path,
+    query: Path,
+    output: Path,
+    genome_size: int,
+):
+    command = [
+        'cmscan',
+        '--noali',
+        '--cut_tc',
+        '-g',
+        '--nohmmonly',
+        '--rfam',
+        '--cpu', str(cfg.threads),
+        '--tblout', str(output),
+    ]
+    if(genome_size >= 1000000):
+        command.extend(['-Z', str(2 * genome_size // 1000000)])
+    command.extend([str(database), str(query)])
+    return command
 
 
 def read_tool_output(dependency):
@@ -255,7 +368,10 @@ def test_dependencies():
 
     if((cfg.skip_cds is not None and cfg.skip_cds is False) or (cfg.skip_sorf is not None and cfg.skip_sorf is False)):
         test_dependency(DEPENDENCY_PYHMMER)
-        test_dependency(DEPENDENCY_DIAMOND)
+        if(cfg.use_mmseqs):
+            test_dependency(DEPENDENCY_MMSEQS)
+        else:
+            test_dependency(DEPENDENCY_DIAMOND)
 
     if(cfg.skip_ori is not None and cfg.skip_ori is False):
         test_dependency(DEPENDENCY_BLASTN)

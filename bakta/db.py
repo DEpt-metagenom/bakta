@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess as sp
 import stat
 import sys
 import tarfile
@@ -407,11 +406,8 @@ def update_amrfinderplus_db(db_path: Path):
         '--force_update'
     ]
     log.debug('cmd=%s', cmd)
-    proc = sp.run(
+    proc = bu.run_tool(
         cmd,
-        stdout=sp.PIPE,
-        stderr=sp.PIPE,
-        universal_newlines=True
     )
     if(proc.returncode != 0):
         log.debug('stdout=\'%s\', stderr=\'%s\'', proc.stdout, proc.stderr)

@@ -1,6 +1,4 @@
 import logging
-import subprocess as sp
-
 from collections import OrderedDict
 from pathlib import Path
 
@@ -20,29 +18,17 @@ def predict_nc_rna_regions(data: dict, sequences_path: Path):
     """Search for non-coding RNA regions."""
 
     output_path = cfg.tmp_path.joinpath('ncrna-regions.tsv')
-    cmd = [
-        'cmscan',
-        '--noali',
-        '--cut_tc',
-        '-g',  # activate glocal mode
-        '--nohmmonly',  # strictly use CM models
-        '--rfam',
-        '--cpu', str(cfg.threads),
-        '--tblout', str(output_path)
-    ]
-    if(data['stats']['size'] >= 1000000):
-        cmd.append('-Z')
-        cmd.append(str(2 * data['stats']['size'] // 1000000))
-    cmd.append(str(cfg.db_path.joinpath('ncRNA-regions')))
-    cmd.append(str(sequences_path))
+    cmd = bu.build_cmscan_command(
+        database=cfg.db_path.joinpath('ncRNA-regions'),
+        query=sequences_path,
+        output=output_path,
+        genome_size=data['stats']['size'],
+    )
     log.debug('cmd=%s', cmd)
-    proc = sp.run(
+    proc = bu.run_tool(
         cmd,
         cwd=str(cfg.tmp_path),
         env=cfg.env,
-        stdout=sp.PIPE,
-        stderr=sp.PIPE,
-        universal_newlines=True
     )
     if(proc.returncode != 0):
         log.debug('stdout=\'%s\', stderr=\'%s\'', proc.stdout, proc.stderr)

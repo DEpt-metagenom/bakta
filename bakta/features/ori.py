@@ -1,6 +1,4 @@
 import logging
-import subprocess as sp
-
 from collections import OrderedDict
 from pathlib import Path
 from typing import Sequence
@@ -34,13 +32,10 @@ def predict_oris(data: dict, sequences_path: Path, ori_type: str) -> Sequence[di
         '-out', str(output_path)
     ]
     log.debug('cmd=%s', cmd)
-    proc = sp.run(
+    proc = bu.run_tool(
         cmd,
         cwd=str(cfg.tmp_path),
         env=cfg.env,
-        stdout=sp.PIPE,
-        stderr=sp.PIPE,
-        universal_newlines=True
     )
     if(proc.returncode != 0):
         log.debug('stdout=\'%s\', stderr=\'%s\'', proc.stdout, proc.stderr)

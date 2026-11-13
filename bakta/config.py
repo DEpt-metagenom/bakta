@@ -62,6 +62,7 @@ partial = None
 regions = None
 
 # workflow configuration
+use_mmseqs = False
 skip_trna = None
 skip_tmrna = None
 skip_rrna = None
@@ -271,7 +272,9 @@ def setup(args):
     
 
     # workflow configurations
-    global skip_trna, skip_tmrna, skip_rrna, skip_ncrna, skip_ncrna_region, skip_crispr, skip_cds, skip_pseudo, skip_sorf, skip_gap, skip_ori, skip_filter, skip_plot
+    global use_mmseqs, skip_trna, skip_tmrna, skip_rrna, skip_ncrna, skip_ncrna_region, skip_crispr, skip_cds, skip_pseudo, skip_sorf, skip_gap, skip_ori, skip_filter, skip_plot
+    use_mmseqs = args.use_mmseqs
+    log.info('use-mmseqs=%s', use_mmseqs)
     skip_trna = args.skip_trna
     log.info('skip-tRNA=%s', skip_trna)
     skip_tmrna = args.skip_tmrna
