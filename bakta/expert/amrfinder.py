@@ -1,12 +1,11 @@
 import logging
-import subprocess as sp
-
 from pathlib import Path
 from typing import Sequence
 
 import bakta.config as cfg
 import bakta.constants as bc
 import bakta.features.orf as orf
+import bakta.utils as bu
 
 
 log = logging.getLogger('EXPERT-AMRFINDER')
@@ -33,13 +32,10 @@ def search(cdss: Sequence[dict], cds_fasta_path: Path):
         '--threads', str(cfg.threads)
     ]
     log.debug('cmd=%s', cmd)
-    proc = sp.run(
+    proc = bu.run_tool(
         cmd,
         cwd=str(cfg.tmp_path),
         env=env,
-        stdout=sp.PIPE,
-        stderr=sp.PIPE,
-        universal_newlines=True
     )
     if(proc.returncode != 0):
         log.debug('stdout=\'%s\', stderr=\'%s\'', proc.stdout, proc.stderr)
